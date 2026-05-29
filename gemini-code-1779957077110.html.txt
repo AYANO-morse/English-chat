@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>モールスID通信機 - Ver.14(完全ローカル同期・傍受仕様)</title>
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+    <style>
+        body {
+            font-family: 'Courier New', Courier, monospace;
+            background: #0d1117;
+            color: #58a6ff;
+            padding: 20px;
+            margin: 0;
+            display: grid;
+            /* 💡 3カラム構成：左300px | 中央1fr | 右400px(初期は非表示) */
+            grid-template-columns: 300px 1fr 0px;
+            grid-template-rows: auto 1fr;
+            gap: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+            user-select: none;
+            -webkit-user-select: none;
+            transition: grid-template-columns 0.4s ease;
+        }
+        
+        /* 💡 管理者モード（OoOoO）時に右側の表を展開するレイアウトクラス */
+        body.admin-layout {
+            grid-template-columns: 300px 1fr 400px;
+        }
+        
+        .left-column {
+            grid-column: 1;
+            grid-row: 1 / 3;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .main-panel {
+            grid-column: 2;
+            grid-row: 2;
+            background: #161b22;
+            padding: 25px;
+            border-radius: 10px;
+            border: 2px solid #30363d;
+            text-align: center;
+        }
+
+        .rx-box {
+            grid-column: 2;
+            grid-row: 1;
+            background: #0d1117;
+            border: 2px dashed #30363d;
+            border-radius: 10px;
+            padding: 15px;
+            min-height: 80px;
+            position: relative;
+            transition: 0.3s;
+        }
+        .rx-box.receiving { border-color: #50fa7b; box-shadow: 0 0 15px rgba(80, 250, 123, 0.2); }
+        .rx-box.admin-intercept { border-color: #ff3366; box-shadow: 0 0 20px rgba(255, 51, 102, 0.3); }
+        
+        .rx-title {
+            position: absolute;
+            top: -10px; left: 15px;
+            background: #0d1117; padding: 0 5px;
+            color: #8b949e; font-size: 12px; font-weight: bold;
+        }
+        #rxMessage { font-size: 24px; color: #fff; font-weight: bold; margin-top: 10px; letter-spacing: 2px; }
+        #rxRawMorse { font-size: 14px; color: #8b949e; margin-top: 5px; }
+
+        /* 🔒 右側：管理者専用リアルタイム交信ログパネル */
+        .admin-panel {
+            grid-column: 3;
+            grid-row: 1 / 3;
+            background: #161b22;
+            border: 2px solid #ff3366;
+            border-radius: 10px;
+            padding: 15px;
+            display: none; /* 初期非表示 */
+            flex-direction: column;
+            box-shadow: 0 0 20px rgba(255, 51, 102, 0.15);
+            overflow: hidden;
+        }
+        .admin-panel.show { display: flex; }
+        .admin-table-wrapper {
+            flex: 1;
+            overflow-y: auto;
+            margin-top: 10px;
+            border: 1px solid #30363d;
+            background: #0d1117;
+            border-radius: 5px;
+        }
+        .admin-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
+        .admin-table th { background: #21262d; color: #ff3366; padding: 8px; position: sticky; top: 0; border-bottom: 2px solid #30363d; }
+        .admin-table td { padding: 8px; border-bottom: 1px solid #21262d; color: #c9d1d9; word-break: break-all; }
+        .admin-table tr:hover { background: rgba(255, 51, 102, 0.05); }
+        .tag-route { background: #ff3366; color: #fff; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 11px; letter-spacing: 1px; }
+
+        .box { background: #161b22; padding: 15px; border-radius: 10px; border: 2px solid #30363d; }
+        h3 { color: #58a6ff; font-size: 14px; margin-top: 0; border-bottom: 1px solid #30363d; padding-bottom: 5px; }
+        
+        .scroll-table { max-height: 200px; overflow-y: auto; font-size: 12px; }
+        .morse-table { width: 100%; border-collapse: collapse; }
+        .morse-table td { padding: 3px 5px; color: #8b949e; }
+        .morse-table .char { color: #ff79c6; font-weight: bold; width: 20px; }
+        .morse-table .code { color: #50fa7b; font-size: 13px; letter-spacing: 1px; }
+
+        .my-id-display {
+            font-size: 32px; font-weight: bold; color: #00ffcc; text-align: center;
+            background: #0d1117; padding: 10px; border-radius: 5px; border: 1px solid #00ffcc;
+            letter-spacing: 5px; text-shadow: 0 0 8px rgba(0,255,204,0.3);
+        }
+        .my-id-display.admin-mode { color: #ff3366; border-color: #ff3366; text-shadow: 0 0 12px #ff3366; }
+        
+        .dial-container { display: flex; justify-content: center; gap: 15px; margin: 25px 0; flex-wrap: wrap; }
+        .dial-wrapper { display: flex; flex-direction: column; align-items: center; }
+        .dial-label { font-size: 11px; color: #8b949e; margin-bottom: 5px; }
+        
+        .rotary-dial {
+            width: 55px; height: 55px; border-radius: 50%;
+            background: radial-gradient(circle, #30363d 30%, #21262d 70%, #0d1117 100%);
+            border: 3px solid #30363d; cursor: ew-resize; position: relative; transition: 0.2s; touch-action: none;
+        }
+        .rotary-dial.focused { border-color: #58a6ff; box-shadow: 0 0 12px rgba(88, 166, 255, 0.6); }
+        .dial-value { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 24px; font-weight: bold; color: #ff79c6; pointer-events: none; }
+        .rotary-dial.matched { border-color: #ffaa00; box-shadow: 0 0 15px rgba(255,170,0,0.3); }
+        .rotary-dial.matched .dial-value { color: #ffaa00; text-shadow: 0 0 8px #ffaa00; }
+        .rotary-dial.admin-matched { border-color: #ff3366; box-shadow: 0 0 20px rgba(255,51,102,0.5); }
+        .rotary-dial.admin-matched .dial-value { color: #ff3366; text-shadow: 0 0 10px #ff3366; }
+
+        .key-pad { margin: 15px auto; width: 70%; padding: 20px; background: #21262d; border: 2px solid #30363d; border-radius: 10px; font-size: 18px; color: #8b949e; transition: 0.1s; }
+        .key-pad.active { background: #ff79c6; color: #fff; box-shadow: 0 0 20px #ff79c6; }
+        .key-pad.disabled { background: #222 !important; color: #444 !important; border-color: #333 !important; box-shadow: none !important; cursor: not-allowed; }
+
+        #signalStream { background: #0d1117; padding: 10px; border-radius: 5px; border: 1px solid #30363d; min-height: 35px; font-size: 20px; color: #ff79c6; letter-spacing: 2px; word-break: break-all; margin: 10px 0; text-align: left; }
+        #signalStream.disabled { background: #141414; color: #444; }
+        
+        .btn-send { font-size: 18px; padding: 10px 30px; cursor: pointer; background: #ff79c6; border: none; color: #fff; font-weight: bold; border-radius: 5px; }
+        .btn-send:hover { background: #ff92df; }
+        .btn-send:disabled { background: #30363d !important; color: #8b949e !important; cursor: not-allowed; box-shadow: none; }
+        .btn-clear { background: #30363d; color: #8b949e; font-size: 12px; border: none; padding: 5px 10px; border-radius: 3px; cursor: pointer; margin-left: 10px;}
+
+        #statusLog { color: #ff5555; font-size: 14px; margin-top: 5px; font-weight: bold; }
+
+        /* 💡 テキスト変換エリア用の新規追加スタイル */
+        .text-conv-input {
+            width: 100%; box-sizing: border-box; background: #0d1117; border: 1px solid #30363d;
+            color: #fff; padding: 8px; border-radius: 5px; font-family: monospace; font-size: 13px; margin-bottom: 10px; resize: vertical;
+        }
+        .btn-conv {
+            width: 100%; padding: 8px; background: #58a6ff; border: none; color: #fff;
+            font-weight: bold; border-radius: 5px; cursor: pointer; font-size: 12px;
+        }
+        .btn-conv:hover { background: #79b7ff; }
+
+        /* 📡 STUNスイッチ用スタイル */
+        .stun-switch-container {
+            display: flex; background: #0d1117; border: 1px solid #30363d; padding: 4px; border-radius: 5px; justify-content: space-between; align-items: center;
+        }
+        .stun-btn {
+            flex: 1; padding: 6px; font-size: 11px; border: none; font-weight: bold; cursor: pointer; border-radius: 3px; color: #8b949e; background: transparent; transition: 0.2s;
+        }
+        .stun-btn.active-on { background: #50fa7b; color: #0d1117; }
+        .stun-btn.active-off { background: #ff5555; color: #fff; }
+
+        @media (max-width: 1024px) {
+            body.admin-layout { display: flex; flex-direction: column; }
+            .admin-panel { max-height: 400px; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="left-column">
+    <div class="box">
+        <h3>[ モールス符号一覧 ]</h3>
+        <div class="scroll-table">
+            <table class="morse-table" id="morseHelpTable"></table>
+        </div>
+    </div>
+
+    <div class="box">
+        <h3>[ あなたのマイID ]</h3>
+        <p style="font-size: 11px; color: #8b949e; margin: 0 0 10px 0;">URLに ?admin=1 をつけて開くと…?</p>
+        <div class="my-id-display" id="myIdDisplay">-----</div>
+    </div>
+
+    <div class="box" id="textConverterBox">
+        <h3>[ テキスト送信変換 ]</h3>
+        <p style="font-size: 11px; color: #8b949e; margin: 0 0 8px 0;">英文や数字を入力してバッファへ自動変換</p>
+        <textarea id="textInput" class="text-conv-input" rows="2" placeholder="HELLO 123"></textarea>
+        <button class="btn-conv" onclick="convertTextToMorse()">符号変換してバッファへ送出</button>
+    </div>
+
+    <!-- 📡 STUN ON/OFF パネル -->
+    <div class="box" id="stunSettingBox">
+        <h3>[ STUNサーバー設定 ]</h3>
+        <p style="font-size: 11px; color: #8b949e; margin: 0 0 8px 0;">変更時はネットワークが再初期化されます</p>
+        <div class="stun-switch-container">
+            <button id="stunOnBtn" class="stun-btn active-on" onclick="toggleStunSetting(true)">STUN: ON</button>
+            <button id="stunOffBtn" class="stun-btn" onclick="toggleStunSetting(false)">STUN: OFF</button>
+        </div>
+    </div>
+</div>
+
+<div class="rx-box" id="rxBox">
+    <div class="rx-title" id="rxTitle">[受信モニター - RECEIVER]</div>
+    <div id="rxStatus" style="font-size: 12px; color: #8b949e;">ネットワーク接続中...</div>
+    <div id="rxMessage">---</div>
+    <div id="rxRawMorse"></div>
+</div>
+
+<div class="admin-panel" id="adminPanel">
+    <h3 style="color: #ff3366; border-color: #ff3366;">⚡ [ リアルタイム通信傍受ログ ]</h3>
+    <p style="font-size: 11px; color: #8b949e; margin: 5px 0 0 0;">ネットワーク全体の交信を検知・記録中...</p>
+    <div class="admin-table-wrapper">
+        <table class="admin-table">
+            <thead>
+                <tr>
+                    <th style="width: 130px;">通信経路 (ROUTE)</th>
+                    <th>解読内容 (DATA)</th>
+                </tr>
+            </thead>
+            <tbody id="adminLogBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<div class="main-panel">
+    <h3 style="border:none; font-size: 16px; margin-bottom: 0;">[ ROTARY DIAL TRANSMITTER ]</h3>
+    <p style="font-size: 12px; color: #8b949e; margin-top: 5px;">1. ダイヤルを左右スワイプして【相手のID】にセットする</p>
+    
+    <div class="dial-container">
+        <div class="dial-wrapper"><div class="dial-label">1桁目</div><div class="rotary-dial" id="dial0" onclick="selectDial(0)"><div class="dial-value">1</div></div></div>
+        <div class="dial-wrapper"><div class="dial-label">2桁目</div><div class="rotary-dial" id="dial1" onclick="selectDial(1)"><div class="dial-value">1</div></div></div>
+        <div class="dial-wrapper"><div class="dial-label">3桁目</div><div class="rotary-dial" id="dial2" onclick="selectDial(2)"><div class="dial-value">1</div></div></div>
+        <div class="dial-wrapper"><div class="dial-label">4桁目</div><div class="rotary-dial" id="dial3" onclick="selectDial(3)"><div class="dial-value">1</div></div></div>
+        <div class="dial-wrapper"><div class="dial-label">5桁目</div><div class="rotary-dial" id="dial4" onclick="selectDial(4)"><div class="dial-value">1</div></div></div>
+    </div>
+
+    <div id="statusLog">> ダイヤルを回して相手に同調させてください...</div>
+
+    <p style="font-size: 12px; color: #8b949e; margin-top: 20px; margin-bottom: 5px;">2. 【ENTERキー】で符号を入力</p>
+    <div id="keyPad" class="key-pad">ENTER KEY (電鍵)</div>
+
+    <div style="font-size: 12px; color: #8b949e; text-align: left;">[ 送信バッファ ] <button class="btn-clear" onclick="clearBuffer()">クリア</button></div>
+    <div id="signalStream"></div>
+
+    <button class="btn-send" id="btnSend" onclick="transmitMessage()">更新送信 (UPDATE)</button>
+</div>
+
+<script>
+// --- モールス符号定義 ---
+const MORSE_MAP = {
+    'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.', 'G': '--.', 'H': '....',
+    'I': '..', 'J': '.---', 'K': '-.-', 'L': '.-..', 'M': '--', 'N': '-.', 'O': '---', 'P': '.--.',
+    'Q': '--.-', 'R': '.-.', 'S': '...', 'T': '-', 'U': '..-', 'V': '...-', 'W': '.--', 'X': '-..-',
+    'Y': '-.--', 'Z': '--..', '1': '.----', '2': '..---', '3': '...--', '4': '....-', '5': '.....',
+    '6': '-....', '7': '--...', '8': '---..', '9': '----.', '0': '-----'
+};
+const REVERSE_MORSE_MAP = {};
+for (let key in MORSE_MAP) { REVERSE_MORSE_MAP[MORSE_MAP[key]] = key; }
+
+// ヘルプテーブルの動的生成
+const table = document.getElementById('morseHelpTable');
+const keys = Object.keys(MORSE_MAP);
+for(let i=0; i<keys.length; i+=2) {
+    let tr = document.createElement('tr');
+    tr.innerHTML = `<td class="char">${keys[i]}</td><td class="code">${MORSE_MAP[keys[i]]}</td>`;
+    if(keys[i+1]) { tr.innerHTML += `<td class="char">${keys[i+1]}</td><td class="code">${MORSE_MAP[keys[i+1]]}</td>`; }
+    table.appendChild(tr);
+}
+
+// --- ID生成と管理者フラグ判定 ---
+const urlParams = new URLSearchParams(window.location.search);
+const isAdmin = urlParams.get('admin') === '1';
+const myID = isAdmin ? "OoOoO" : String(Math.floor(10000 + Math.random() * 90000));
+document.getElementById('myIdDisplay').innerText = myID;
+if (isAdmin) document.getElementById('myIdDisplay').classList.add('admin-mode');
+
+// --- 同一ブラウザ内・最強同期用データバス (BroadcastChannel) ---
+const localBus = new BroadcastChannel('morse_admin_channel');
+
+const DIAL_CHARS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+let currentValues = ['1', '1', '1', '1', '1'];
+let activeDialIndex = 0;
+let audioCtx = null; let oscillator = null; let gainNode = null;
+let enterPressed = false; let keyDownTime = 0;
+
+// --- PeerJS通信初期化コアロジック ---
+let peer = null;
+let useStun = true; // デフォルトはON
+
+function initPeerInstance() {
+    if (peer) {
+        peer.destroy();
+    }
+
+    const peerOptions = {};
+    if (useStun) {
+        peerOptions.config = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' }
+            ]
+        };
+    } else {
+        peerOptions.config = { iceServers: [] }; // STUNサーバーを完全に無効化
+    }
+
+    peer = new Peer(`morse-id-${myID}`, peerOptions);
+
+    peer.on('open', () => {
+        document.getElementById('rxStatus').innerText = (myID === "OoOoO") ? "🛑 管理者回線：傍受スタンバイ（オールグリーン）" : "📡 オンライン（電波受信待機中...）";
+        document.getElementById('rxStatus').style.color = (myID === "OoOoO") ? "#ff3366" : "#50fa7b";
+        if(myID === "OoOoO") toggleAdminUI(true);
+    });
+
+    peer.on('connection', (conn) => {
+        conn.on('data', (data) => {
+            processIncomingData(data);
+        });
+    });
+}
+
+// STUN切り替え制御関数
+function toggleStunSetting(status) {
+    if (useStun === status) return;
+    useStun = status;
+
+    const onBtn = document.getElementById('stunOnBtn');
+    const offBtn = document.getElementById('stunOffBtn');
+
+    if (useStun) {
+        onBtn.classList.add('active-on');
+        offBtn.classList.remove('active-off');
+    } else {
+        onBtn.classList.remove('active-on');
+        offBtn.classList.add('active-off');
+    }
+
+    document.getElementById('rxStatus').innerText = "🔄 ネットワーク再初期化中...";
+    document.getElementById('rxStatus').style.color = "#ffaa00";
+    initPeerInstance();
+}
+
+// 初回起動
+initPeerInstance();
+
+// 💡 1端末・複数タブ同期用のデータバス監視処理（ここがVer.14の肝です）
+localBus.onmessage = (event) => {
+    const data = event.data;
+    if (!data) return;
+
+    // もし自分が管理者画面、または管理者ID(OoOoO)に変形している場合、強制的にログの表に追加
+    if (myID === "OoOoO" || currentValues.join('') === "OoOoO") {
+        if (data.isIntercept) {
+            processIncomingData(data);
+        }
+    } else {
+        // 自分宛ての通常メッセージがローカルバス経由できた場合
+        if (!data.isIntercept && data.to === myID) {
+            processIncomingData(data);
+        }
+    }
+};
+
+// 📻 受信・傍受パケットの共通解析＆描画ロジック
+function processIncomingData(data) {
+    if (!data || !data.morse) return;
+
+    let morseLetters = data.morse.split(' ');
+    let translatedText = "";
+    for (let letter of morseLetters) {
+        if (letter === "") translatedText += " ";
+        else if (REVERSE_MORSE_MAP[letter]) translatedText += REVERSE_MORSE_MAP[letter];
+        else translatedText += "?";
+    }
+
+    const rxBox = document.getElementById('rxBox');
+    
+    if (data.isIntercept || myID === "OoOoO" || currentValues.join('') === "OoOoO") {
+        // 管理者モードの挙動
+        rxBox.classList.add('admin-intercept');
+        setTimeout(() => rxBox.classList.remove('admin-intercept'), 1500);
+        document.getElementById('rxTitle').innerText = "⚡ [管理者広域傍受モニター - INTERCEPT]";
+        document.getElementById('rxStatus').innerText = `🕵️ 通信検知 -> [ID: ${data.from}] から [ID: ${data.to}] への暗号`;
+        document.getElementById('rxStatus').style.color = "#ff3366";
+        addLogToTable(data.from, data.to, translatedText, data.morse);
+    } else if (data.to === myID) {
+        // 自分宛ての通常メッセージの挙動
+        rxBox.classList.add('receiving');
+        setTimeout(() => rxBox.classList.remove('receiving'), 1000);
+        document.getElementById('rxTitle').innerText = "[受信モニター - RECEIVER]";
+        document.getElementById('rxStatus').innerText = `🎵 ID:${data.from} からの新着シグナル！`;
+        document.getElementById('rxStatus').style.color = "#50fa7b";
+    }
+
+    // 表示エリアの更新
+    if (data.to === myID || data.isIntercept || myID === "OoOoO" || currentValues.join('') === "OoOoO") {
+        document.getElementById('rxRawMorse').innerText = `受信符号: ${data.morse}`;
+        document.getElementById('rxMessage').innerText = translatedText;
+        playIncomingBeep(data.isIntercept || myID === "OoOoO" || currentValues.join('') === "OoOoO");
+    }
+}
+
+// 💡 ログテーブル（表）に行をシュバッと追加（重複をはじくガード付き）
+function addLogToTable(from, to, text, morse) {
+    const tbody = document.getElementById('adminLogBody');
+    
+    // 直前のログと全く同じ内容（重複）なら描画をスキップ
+    if (tbody.firstChild) {
+        const lastText = tbody.firstChild.innerHTML;
+        if (lastText.includes(`${from} ➔ ${to}`) && lastText.includes(morse)) {
+            return;
+        }
+    }
+    
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+        <td><span class="tag-route">${from} ➔ ${to}</span></td>
+        <td>
+            <strong style="color: #fff; font-size:13px;">${text}</strong><br>
+            <span style="color:#8b949e; font-size:11px;">${morse}</span>
+        </td>
+    `;
+    tbody.insertBefore(tr, tbody.firstChild);
+}
+
+function toggleAdminUI(show) {
+    const body = document.body;
+    const adminPanel = document.getElementById('adminPanel');
+    if (show) { body.classList.add('admin-layout'); adminPanel.classList.add('show'); } 
+    else { body.classList.remove('admin-layout'); adminPanel.classList.remove('show'); }
+}
+
+function selectDial(index) {
+    if (currentValues.join('') === "OoOoO") return;
+    activeDialIndex = index;
+    for(let i=0; i<5; i++) document.getElementById(`dial${i}`).classList.remove('focused');
+    document.getElementById(`dial${activeDialIndex}`).classList.add('focused');
+}
+selectDial(0);
+
+// --- ダイヤルの物理制御 ---
+for (let i = 0; i < 5; i++) {
+    const dial = document.getElementById(`dial${i}`);
+    let isInteracting = false; let startX = 0;
+    function getNumericIndex() { let val = currentValues[i]; if (val === 'O' || val === 'o') val = '0'; return DIAL_CHARS.indexOf(val); }
+    function startAction(clientX) { if (currentValues.join('') === "OoOoO" && !isInteracting) { activeDialIndex = i; } selectDial(i); isInteracting = true; startX = clientX; dial.baseIdx = getNumericIndex(); }
+    function moveAction(clientX) {
+        if (!isInteracting) return;
+        const deltaX = clientX - startX;
+        const step = Math.floor(deltaX / 15);
+        let newIndex = (dial.baseIdx + step) % DIAL_CHARS.length;
+        if (newIndex < 0) newIndex += DIAL_CHARS.length;
+        if (currentValues[i] !== DIAL_CHARS[newIndex]) {
+            currentValues[i] = DIAL_CHARS[newIndex];
+            dial.querySelector('.dial-value').innerText = currentValues[i];
+            playClickSound(); updateDialVisuals();
+        }
+    }
+    dial.addEventListener('mousedown', (e) => { startAction(e.clientX); document.body.style.cursor = 'ew-resize'; });
+    window.addEventListener('mousemove', (e) => { moveAction(e.clientX); });
+    window.addEventListener('mouseup', () => { isInteracting = false; document.body.style.cursor = 'default'; });
+    dial.addEventListener('touchstart', (e) => { startAction(e.touches[0].clientX); }, { passive: true });
+    window.addEventListener('touchmove', (e) => { moveAction(e.touches[0].clientX); }, { passive: true });
+    window.addEventListener('touchend', () => { isInteracting = false; });
+    dial.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        if (currentValues.join('') === "OoOoO") activeDialIndex = i;
+        selectDial(i);
+        const direction = e.deltaY > 0 ? -1 : 1;
+        let newIndex = (getNumericIndex() + direction + DIAL_CHARS.length) % DIAL_CHARS.length;
+        currentValues[i] = DIAL_CHARS[newIndex];
+        dial.querySelector('.dial-value').innerText = currentValues[i];
+        playClickSound(); updateDialVisuals();
+    }, { passive: false });
+}
+
+// --- キーボード操作（Tabの変形ハック ＆ 電鍵Enter） ---
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab') {
+        e.preventDefault(); 
+        const activeDial = document.getElementById(`dial${activeDialIndex}`);
+        const currentValue = currentValues[activeDialIndex];
+        if (currentValue === '0' || currentValue === 'O' || currentValue === 'o') {
+            if (currentValue === '0') currentValues[activeDialIndex] = 'O';
+            else if (currentValue === 'O') currentValues[activeDialIndex] = 'o';
+            else if (currentValue === 'o') currentValues[activeDialIndex] = '0';
+            activeDial.querySelector('.dial-value').innerText = currentValues[activeDialIndex];
+            playClickSound(); updateDialVisuals();
+            return;
+        }
+    }
+    if (currentValues.join('') === "OoOoO") return; // 🔒管理者は送信・打鍵ロック
+    if (e.code === 'Enter') {
+        e.preventDefault(); if (enterPressed) return;
+        enterPressed = true; keyDownTime = Date.now();
+        document.getElementById('keyPad').classList.add('active'); startTone();
+    }
+});
+
+function updateDialVisuals() {
+    const targetID = currentValues.join('');
+    const log = document.getElementById('statusLog');
+    const btnSend = document.getElementById('btnSend');
+    const keyPad = document.getElementById('keyPad');
+    const stream = document.getElementById('signalStream');
+    
+    if (targetID === "OoOoO") {
+        // 🔒 送信機能の物理ロック発動
+        btnSend.disabled = true; btnSend.innerText = "送信不可 (VIEW ONLY)";
+        keyPad.classList.add('disabled'); keyPad.innerText = "🛑 管理者モード：送信機能はロックされています";
+        stream.classList.add('disabled'); clearBuffer();
+        toggleAdminUI(true); // 右側の表を展開
+    } else {
+        btnSend.disabled = false; btnSend.innerText = "更新送信 (UPDATE)";
+        keyPad.classList.remove('disabled'); keyPad.innerText = "ENTER KEY (電鍵)";
+        stream.classList.remove('disabled');
+        if (!isAdmin) toggleAdminUI(false); // 通常モード時は表を隠す
+    }
+
+    for(let i=0; i<5; i++) {
+        const dial = document.getElementById(`dial${i}`);
+        dial.classList.remove('matched', 'admin-matched');
+        if (targetID === "OoOoO") { dial.classList.add('admin-matched'); dial.classList.remove('focused'); } 
+        else if (currentValues[i] === 'O' || currentValues[i] === 'o') { dial.classList.add('admin-matched'); } 
+        else if (targetID !== "11111") { dial.classList.add('matched'); }
+    }
+
+    if (targetID === "OoOoO") {
+        log.style.color = "#ff3366"; log.innerText = `⚠️ OVERRIDE SUCCESS: パッシブ・ログテーブル展開。全交信を自動記録します。`;
+    } else {
+        log.style.color = "#ffaa00"; log.innerText = `📡 現在の設定ID: [ ${targetID} ] に追従中...`;
+    }
+}
+
+// --- オーディオ制御系 ---
+function playClickSound() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+    osc.type = 'triangle'; osc.frequency.setValueAtTime(120, audioCtx.currentTime);
+    gain.gain.setValueAtTime(0.03, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.04);
+    osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + 0.04);
+}
+
+function playIncomingBeep(isIntercept) {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator(); const gain = audioCtx.createGain();
+    osc.type = 'sine'; osc.frequency.setValueAtTime(isIntercept ? 350 : 600, audioCtx.currentTime);
+    gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.4);
+    osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + 0.4);
+}
+
+function startTone() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    oscillator = audioCtx.createOscillator(); gainNode = audioCtx.createGain();
+    oscillator.type = 'sine'; oscillator.frequency.setValueAtTime(800, audioCtx.currentTime); 
+    gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+    oscillator.connect(gainNode); gainNode.connect(audioCtx.destination); oscillator.start();
+}
+function stopTone() { if (oscillator) { oscillator.stop(); oscillator.disconnect(); oscillator = null; } }
+
+window.addEventListener('keyup', (e) => {
+    if (currentValues.join('') === "OoOoO") return;
+    const txStream = document.getElementById('signalStream');
+    if (e.code === 'Enter') {
+        if (!enterPressed) return; enterPressed = false;
+        document.getElementById('keyPad').classList.remove('active'); stopTone();
+        const duration = Date.now() - keyDownTime;
+        txStream.innerText += (duration < 180) ? "." : "-";
+    } else {
+        if (e.key !== 'Tab') {
+            if (txStream.innerText.length > 0 && !txStream.innerText.endsWith(' ')) txStream.innerText += ' ';
+        }
+    }
+});
+
+function clearBuffer() { document.getElementById('signalStream').innerText = ""; }
+
+// --- 🚀 ハイブリッド送信コアロジック（ネット＆ローカルデータバス同時送出） ---
+function transmitMessage() {
+    const txStream = document.getElementById('signalStream');
+    const rawMorse = txStream.innerText.trim();
+    const targetID = currentValues.join('');
+    
+    if (rawMorse.length === 0 || targetID === "11111" || targetID === "OoOoO") return;
+
+    // パケットデータを作成
+    const packetNormal = { from: myID, to: targetID, morse: rawMorse, isIntercept: false };
+    const packetIntercept = { from: myID, to: targetID, morse: rawMorse, isIntercept: true };
+
+    // 【1ルート目】同一ブラウザ内用の超高速データバス経由でブロードキャスト（即座にログを強制表示）
+    localBus.postMessage(packetNormal);
+    localBus.postMessage(packetIntercept);
+
+    // 【2ルート目】通常のインターネットP2P通信（他端末にいる相手用）
+    const conn = peer.connect(`morse-id-${targetID}`);
+    conn.on('open', () => {
+        conn.send(packetNormal);
+        document.getElementById('statusLog').style.color = "#00ffcc";
+        document.getElementById('statusLog').innerText = `⚡ 送信完了: ID:${targetID} への暗号送出に成功しました。`;
+        clearBuffer();
+    });
+
+    conn.on('error', (err) => {
+        // 同一ブラウザ内で受信タブが起動している場合は送信成功扱いにする
+        document.getElementById('statusLog').style.color = "#00ffcc";
+        document.getElementById('statusLog').innerText = `⚡ ローカル同期完了: 暗号が傍受ログおよび対象IDへ中継されました。`;
+        clearBuffer();
+    });
+
+    // 遠隔の管理者がいる場合のためのP2P送信
+    const adminConn = peer.connect(`morse-id-OoOoO`);
+    adminConn.on('open', () => { adminConn.send(packetIntercept); });
+    adminConn.on('error', () => {});
+}
+
+// 💡 【新規追加】入力された英数字文字列をモールス信号へと変換して送信バッファにセットする処理
+function convertTextToMorse() {
+    const textInput = document.getElementById('textInput');
+    const txStream = document.getElementById('signalStream');
+    if (!textInput || !txStream) return;
+
+    const inputStr = textInput.value.toUpperCase();
+    let resultMorse = [];
+
+    for (let char of inputStr) {
+        if (char === ' ' || char === '　') {
+            resultMorse.push(''); // 単語の区切り（スペース2つ分空けるためのトリガー）
+        } else if (MORSE_MAP[char]) {
+            resultMorse.push(MORSE_MAP[char]);
+        }
+    }
+
+    // 変換結果を送信バッファ(signalStream)に反映し、末尾に打鍵用のスペースを1つ付与
+    txStream.innerText = resultMorse.join(' ') + ' ';
+}
+
+updateDialVisuals();
+</script>
+
+</body>
+</html>
